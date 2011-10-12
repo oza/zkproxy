@@ -1,0 +1,11 @@
+*.[oda]
+*.so
+*swp
+GPATH
+GRTAGS
+GSYMS
+GTAGS
+trash
+.gdbinit
+valgrind.log
+zkproxy
