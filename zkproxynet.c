@@ -139,6 +139,7 @@ static void check_cmd()
 }
 #endif
 
+
 static void establish_connection(struct client_info *ci)
 {
 	int fd = ci->fd;
@@ -195,8 +196,10 @@ void delegate_request(struct client_info *ci)
 	printf("xid %d, type %d", rh.xid, rh.type);
 	close_buffer_iarchive(&ia);
 	*/
+	while(1);
 }
 
+#if 0
 static void handle_request(struct client_info *ci)
 {
 	printf("handle request, status %d\n", ci->status);
@@ -214,6 +217,7 @@ static void handle_request(struct client_info *ci)
 
 	}
 }
+#endif
 
 static void client_handler(int fd, int events, void *data)
 {
@@ -224,11 +228,12 @@ static void client_handler(int fd, int events, void *data)
 		printf("read, %d\n", ci->fd);
 		assert(ci->rx_list.next == NULL);
 
-		//client_rx_off(ci);
 
 		client_incref(ci);
-		// queue_request();
-		handle_request(ci);
+		client_rx_off(ci);
+		coroutine_enter(ci->rx_co, ci);
+		client_rx_on(ci);
+		//handle_request(ci);
 	}
 
 	if (events & EPOLLOUT) {
@@ -254,6 +259,21 @@ static void client_handler(int fd, int events, void *data)
 
 static void client_rx_handler(void *opaque)
 {
+	struct client_info *ci = opaque;
+	printf("handle request, status %d\n", ci->status);
+	switch(ci->status) {
+	case CLIENT_STATUS_CONNECTING:
+		printf("connecting. start to establish connection\n");
+		establish_connection(ci);
+		break;
+	case CLIENT_STATUS_CONNECTED:
+		printf("start to delegate connection\n");
+		delegate_request(ci);
+		break;
+	default:
+		printf("not yet implemented!");
+
+	}
 }
 
 static void client_tx_handler(void *opaque)
