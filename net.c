@@ -196,6 +196,34 @@ reread:
 	return ret;
 }
 
+int do_write(int sockfd, void *buf, int len)
+{
+	int rc, ret = 0;
+rewrite:
+	rc = write(sockfd, buf, len);
+	if (rc == 0) {
+		if (ret)
+			return ret;
+		else
+			return -1;
+	} else if (rc < 0) {
+		if (errno == EINTR)
+			goto rewrite;
+		if (errno == EAGAIN)
+			return ret;
+
+		return -1;
+	}
+
+	len -= rc;
+	ret += rc;
+	buf = (char *)buf + rc;
+	if (len)
+		goto rewrite;
+
+	return ret;
+}
+
 int do_writev(int sockfd, struct iovec *iov, int len, int offset)
 {
 	int ret, diff, iovcnt;

@@ -11,6 +11,7 @@ struct co_buffer {
 };
 
 int do_read(int sockfd, void *buf, int len);
+int do_write(int sockfd, void *buf, int len);
 int do_writev(int sockfd, struct iovec *iov, int len, int offset);
 void do_co_read(struct co_buffer *cob, void *buf, size_t count);
 int connect_to(const char *name, int port, int idle, int intvl, int cnt);
