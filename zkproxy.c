@@ -123,6 +123,8 @@ int main(int argc, char *argv[])
 	}
 
 	is_debug = 1;
+	/* FIXME: pass warning */
+	is_daemon = is_daemon;
 
 	/*
 	if (optind != argc)

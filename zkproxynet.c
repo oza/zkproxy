@@ -119,6 +119,7 @@ static void client_tx_off(struct client_info *ci)
 	modify_event(ci->fd, ci->events);
 }
 
+#if 0
 static void check_cmd()
 {
 	/**
@@ -136,6 +137,7 @@ static void check_cmd()
 	 * wchs
 	 */
 }
+#endif
 
 static void establish_connection(struct client_info *ci)
 {
@@ -173,8 +175,8 @@ static void establish_connection(struct client_info *ci)
 	ci->status = CLIENT_STATUS_CONNECTED;
 }
 
-int delegate_request(struct client_info *ci)
-{	
+void delegate_request(struct client_info *ci)
+{
 	/*
 	int fd = ci->fd;
 	int len;
@@ -340,9 +342,8 @@ int create_listen_port(int port, void *data)
 
 int init_acrd_work_queue(int in_memory)
 {
-	int i;
-
 	/*
+	int i;
 	for (i = 0; i < NR_RECV_THREAD; i++) {
 		recv_queue[i] = init_work_queue(recv_request, RECV_INTERVAL);
 		if (!recv_queue[i])
