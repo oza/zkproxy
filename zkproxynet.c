@@ -20,6 +20,7 @@
 #include <arpa/inet.h>
 #include <sys/epoll.h>
 #include <assert.h>
+#include <errno.h>
 
 #include "util.h"
 #include "net.h"
@@ -74,6 +75,9 @@ struct client_info {
 	int refcnt;
 
 };
+
+/* the size of connect request */
+#define HANDSHAKE_REQ_SIZE 44
 
 static void destroy_client(struct client_info *ci)
 {
@@ -139,20 +143,59 @@ static void check_cmd()
 }
 #endif
 
+static int recv_buffer(struct client_info *ci, void *buf, size_t len)
+{
+	int ret = 0, offset = 0;
+
+	while (len) {
+		ret = do_read(ci->fd, buf + offset, len);
+
+		if (ret < 0) {
+			if (errno != EAGAIN)
+				return -1;
+
+			coroutine_yield();
+			continue;
+		}
+		offset += ret;
+		len -= ret;
+	}
+
+	return 0;
+}
+
+static inline int is_handshake_size(int len)
+{
+	return len == HANDSHAKE_REQ_SIZE;
+}
 
 static void establish_connection(struct client_info *ci)
 {
-	int fd = ci->fd;
+	int ret, fd = ci->fd;
+	char *buf = NULL;
 	/* read header */
 	struct ConnectRequest cr;
 	int len;
-	read(fd, &len, sizeof(int));
+	ret = recv_buffer(ci, &len, sizeof(int));
 	len = ntohl(len);
-	printf("len %d\n", len);
+	if (ret < 0 || !is_handshake_size(len)) {
+		printf("illegal msg size %d\n", len);
+		return;
+	}
 
-	/* read payload */
-	char buf[len];
-	read(fd, buf, len);
+	buf = zalloc(len);
+	if (buf == NULL) {
+		printf("oom\n");
+		return;
+	}
+
+	/* try to read connect header */
+	ret = recv_buffer(ci, buf, len);
+	if (ret < 0) {
+		perror("unknown err\n");
+		abort();
+	}
+
 	struct iarchive *ia = create_buffer_iarchive(buf, len);
 	deserialize_ConnectRequest(ia, "hdr", &cr);
 	printf("protocolVersion %d, lastZxidSeen %lu, timeout %u, \
