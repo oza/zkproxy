@@ -122,6 +122,8 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	is_debug = 1;
+
 	/*
 	if (optind != argc)
 		dir = argv[optind];

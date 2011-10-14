@@ -3,7 +3,7 @@ CFLAGS += -D_GNU_SOURCE -DNDEBUG
 LIBS += -lpthread
 
 PROGRAMS = zkproxy
-ZKPROXY_OBJS = zkproxy.o coroutine.o event.o net.o logger.o zkproxynet.o
+ZKPROXY_OBJS = zkproxy.o coroutine.o event.o net.o logger.o zkproxynet.o recordio.o zookeeper.jute.o
 ZKPROXY_DEP = $(ZKPROXY_OBJS:.o=.d)
 
 .PHONY:all

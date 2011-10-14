@@ -31,10 +31,15 @@ do {									\
 	log_write(LOG_ERR, "%s(%d) " fmt, __func__, __LINE__, ##args);	\
 } while (0)
 
+//	log_write(LOG_ERR, "%s(%d) " fmt, __func__, __LINE__, ##args);	
+
 #define dprintf(fmt, args...)						\
 do {									\
 	if (unlikely(is_debug))						\
-		log_write(LOG_ERR, "%s(%d) " fmt, __func__, __LINE__, ##args);\
+		printf("%s(%d) " fmt, __func__, __LINE__, ##args);\
 } while (0)
+
+//	if (unlikely(is_debug))						
+//		log_write(LOG_ERR, "%s(%d) " fmt, __func__, __LINE__, ##args);
 
 #endif	/* LOG_H */

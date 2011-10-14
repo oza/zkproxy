@@ -17,6 +17,7 @@
  */
 
 #include <unistd.h>
+#include <arpa/inet.h>
 #include <sys/epoll.h>
 #include <assert.h>
 
@@ -26,6 +27,9 @@
 #include "work.h"
 #include "logger.h"
 #include "coroutine.h"
+#include "zookeeper.h"
+#include "zookeeper.jute.h"
+#include "recordio.h"
 
 extern int keepidle, keepintvl, keepcnt;
 
@@ -43,6 +47,7 @@ enum client_status {
 	CLIENT_STATUS_CONNECTED,
 	CLIENT_STATUS_JOINED,
 	CLIENT_STATUS_DEAD,
+	CLIENT_STATUS_CONNECTING,
 };
 
 struct client_info {
@@ -114,29 +119,126 @@ static void client_tx_off(struct client_info *ci)
 	modify_event(ci->fd, ci->events);
 }
 
+static void check_cmd()
+{
+	/**
+	 * conf
+	 * cons
+	 * crst
+	 * dump
+	 * gtmk
+	 * ruok
+	 * stmk
+	 * srvr
+	 * srst
+	 * wchc
+	 * wchp
+	 * wchs
+	 */
+}
+
+static void establish_connection(struct client_info *ci)
+{
+	int fd = ci->fd;
+	/* read header */
+	struct ConnectRequest cr;
+	int len;
+	read(fd, &len, sizeof(int));
+	len = ntohl(len);
+	printf("len %d\n", len);
+
+	/* read payload */
+	char buf[len];
+	read(fd, buf, len);
+	struct iarchive *ia = create_buffer_iarchive(buf, len);
+	deserialize_ConnectRequest(ia, "hdr", &cr);
+	printf("protocolVersion %d, lastZxidSeen %lu, timeout %u, \
+			sessionId %lu, buffer.size %d\n", cr.protocolVersion, cr.lastZxidSeen,
+			cr.timeOut, cr.sessionId, cr.passwd.len);
+	close_buffer_iarchive(&ia);
+
+	/* try to handshake */
+	struct oarchive *oa = create_buffer_oarchive();
+	struct ConnectResponse res;
+	res.protocolVersion = cr.protocolVersion;
+	res.timeOut = cr.timeOut;
+	res.sessionId = 1;
+	res.passwd.len = len;
+	serialize_ConnectResponse(oa, "rsp", &res);
+	len = get_buffer_len(oa);
+	write(fd, &len, sizeof(int));
+	write(fd, get_buffer(oa), len);
+	close_buffer_oarchive(&oa, 0);
+
+	ci->status = CLIENT_STATUS_CONNECTED;
+}
+
+int delegate_request(struct client_info *ci)
+{	
+	/*
+	int fd = ci->fd;
+	int len;
+	read(fd, &len, sizeof(int));
+	len = ntohl(len);
+	printf("len %d\n", len);
+	*/
+
+	/* read payload */
+	/*
+	char buf[len];
+	read(fd, buf, len);
+	struct iarchive *ia = create_buffer_iarchive(buf, len);
+	struct RequestHeader rh;
+	deserialize_RequestHeader(ia, "hdr", &rh);
+	printf("xid %d, type %d", rh.xid, rh.type);
+	close_buffer_iarchive(&ia);
+	*/
+}
+
+static void handle_request(struct client_info *ci)
+{
+	printf("handle request, status %d\n", ci->status);
+	switch(ci->status) {
+	case CLIENT_STATUS_CONNECTING:
+		printf("connecting. start to establish connection\n");
+		establish_connection(ci);
+		break;
+	case CLIENT_STATUS_CONNECTED:
+		printf("start to delegate connection\n");
+		delegate_request(ci);
+		break;
+	default:
+		printf("not yet implemented!");
+
+	}
+}
+
 static void client_handler(int fd, int events, void *data)
 {
 	struct client_info *ci = (struct client_info *)data;
 
 	if (events & EPOLLIN) {
+		printf("read, %d\n", fd);
+		printf("read, %d\n", ci->fd);
 		assert(ci->rx_list.next == NULL);
 
-		client_rx_off(ci);
+		//client_rx_off(ci);
 
 		client_incref(ci);
-		//queue_work(recv_queue, &ci->rx_list);
+		// queue_request();
+		handle_request(ci);
 	}
 
 	if (events & EPOLLOUT) {
+		printf("write, %d\n", fd);
 		ci->tx_on = 1;
-		client_tx_off(ci);
+		//client_tx_off(ci);
 
 		client_incref(ci);
-		//queue_work(send_queue, &ci->tx_list);
 	}
 
 	if (ci->status == CLIENT_STATUS_DEAD) {
-		eprintf("closed a connection, %d\n", fd);
+		printf("closed a connection, %d\n", fd);
 		unregister_event(fd);
 
 		//remove_all_watch(ci);
@@ -156,6 +258,7 @@ static void client_tx_handler(void *opaque)
 {
 }
 
+
 static struct client_info *create_client(int fd)
 {
 	struct client_info *ci;
@@ -166,6 +269,9 @@ static struct client_info *create_client(int fd)
 
 	ci->rx_co = coroutine_create(client_rx_handler);
 	ci->tx_co = coroutine_create(client_tx_handler);
+
+	ci->fd = fd;
+	ci->status = CLIENT_STATUS_CONNECTING;
 
 	dprintf("ci %p", ci);
 
@@ -210,13 +316,15 @@ static void listen_handler(int listen_fd, int events, void *data)
 		return;
 	}
 
+	printf("connected\n");
+
 	ret = register_event(fd, client_handler, ci);
 	if (ret) {
-		//destroy_client(ci);
+		destroy_client(ci);
 		return;
 	}
 
-	dprintf("accepted a new connection, %d ci->fd %d ci %p\n",
+	printf("accepted a new connection, %d ci->fd %d ci %p\n",
 		fd, ci->fd, ci);
 }
 
@@ -228,4 +336,20 @@ static int create_listen_port_fn(int fd, void *data)
 int create_listen_port(int port, void *data)
 {
 	return create_listen_ports(port, create_listen_port_fn, data);
+}
+
+int init_acrd_work_queue(int in_memory)
+{
+	int i;
+
+	/*
+	for (i = 0; i < NR_RECV_THREAD; i++) {
+		recv_queue[i] = init_work_queue(recv_request, RECV_INTERVAL);
+		if (!recv_queue[i])
+			return -1;
+	}
+	*/
+
+
+	return 0;
 }
