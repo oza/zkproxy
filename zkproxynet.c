@@ -81,22 +81,25 @@ struct client_info {
 
 static void destroy_client(struct client_info *ci)
 {
+	printf("destroy!\n");
 	close(ci->fd);
 	free(ci);
 }
 
 static void client_incref(struct client_info *ci)
 {
-	if (ci)
+	if (ci) {
 		__sync_add_and_fetch(&ci->refcnt, 1);
+		printf("refcnt %d\n", ci->refcnt);
+	}
 }
 
 static void client_decref(struct client_info *ci)
 {
-	if (ci && __sync_sub_and_fetch(&ci->refcnt, 1) == 0) {
+	if (ci && __sync_sub_and_fetch(&ci->refcnt, 1) == 0)
 		destroy_client(ci);
-		return;
-	}
+
+	printf("refcnt %d\n", ci->refcnt);
 }
 
 static void client_rx_on(struct client_info *ci)
@@ -336,6 +339,7 @@ static struct client_info *create_client(int fd)
 	ci->tx_co = coroutine_create(client_tx_handler);
 
 	ci->fd = fd;
+	ci->refcnt = 1;
 	ci->status = CLIENT_STATUS_CONNECTING;
 
 	dprintf("ci %p", ci);
@@ -380,8 +384,6 @@ static void listen_handler(int listen_fd, int events, void *data)
 		close(fd);
 		return;
 	}
-
-	printf("connected\n");
 
 	ret = register_event(fd, client_handler, ci);
 	if (ret) {
