@@ -218,6 +218,7 @@ static void queue_response(struct client_info *ci, struct response *res)
 
 static void set_status_connected(struct client_info *ci)
 {
+	printf("%s", __FUNCTION__);
 	ci->status = CLIENT_STATUS_CONNECTED;
 }
 
@@ -333,6 +334,8 @@ void delegate_request(struct client_info *ci)
 	printf("xid %d, type %d", rh.xid, rh.type);
 	close_buffer_iarchive(&ia);
 	*/
+	printf("%s\n", __FUNCTION__);
+	while(1);
 #if 0
 	int len, ret, fd = ci->fd;
 	char *buf = NULL;
@@ -427,7 +430,7 @@ static void client_handler(int fd, int events, void *data)
 
 		client_incref(ci);
 		client_rx_off(ci);
-		establish_connection(ci);
+		client_rx_handler(ci);
 		//coroutine_enter(&ci->rx_co, ci);
 		client_rx_on(ci);
 		client_decref(ci);
