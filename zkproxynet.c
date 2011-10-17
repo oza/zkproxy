@@ -54,6 +54,7 @@ enum client_status {
 struct client_info {
 	struct client_id cid;
 	struct list_head siblings;
+	struct list_head tx_reqs;
 
 	int fd;
 	enum client_status status;
@@ -76,12 +77,22 @@ struct client_info {
 
 };
 
+struct response {
+	struct oarchive *oa;
+	struct list_head siblings;
+	void (*callback)(struct client_info *);
+};
+
+static LIST_HEAD(client_info_list);
+
+
+
 /* the size of connect request */
 #define HANDSHAKE_REQ_SIZE 44
 
 static void destroy_client(struct client_info *ci)
 {
-	printf("destroy!\n");
+	printf("*** %s refcnt %d ***\n", __FUNCTION__, ci->refcnt);
 	close(ci->fd);
 	free(ci);
 }
@@ -90,7 +101,7 @@ static void client_incref(struct client_info *ci)
 {
 	if (ci) {
 		__sync_add_and_fetch(&ci->refcnt, 1);
-		printf("refcnt %d\n", ci->refcnt);
+		printf("%s refcnt %d\n", __FUNCTION__, ci->refcnt);
 	}
 }
 
@@ -99,7 +110,7 @@ static void client_decref(struct client_info *ci)
 	if (ci && __sync_sub_and_fetch(&ci->refcnt, 1) == 0)
 		destroy_client(ci);
 
-	printf("refcnt %d\n", ci->refcnt);
+	printf("%s refcnt %d\n", __FUNCTION__, ci->refcnt);
 }
 
 static void client_rx_on(struct client_info *ci)
@@ -146,18 +157,19 @@ static void check_cmd()
 }
 #endif
 
-static int recv_buffer(struct client_info *ci, void *buf, size_t len)
+static int recv_buffer(int fd, void *buf, size_t len)
 {
 	int ret = 0, offset = 0;
 
 	while (len) {
-		ret = do_read(ci->fd, buf + offset, len);
+		ret = do_read(fd, buf + offset, len);
 
 		if (ret < 0) {
 			if (errno != EAGAIN)
 				return -1;
 
-			coroutine_yield();
+			/* FIXME: use coroutine */
+			//coroutine_yield();
 			continue;
 		}
 		offset += ret;
@@ -167,19 +179,48 @@ static int recv_buffer(struct client_info *ci, void *buf, size_t len)
 	return 0;
 }
 
+static int write_buffer(int fd, void *buf, size_t len)
+{
+        int ret = 0, offset = 0;
+
+        while (len) {
+                ret = do_write(fd, buf + offset, len);
+
+                if (ret < 0) {
+                        if (errno != EAGAIN)
+                                return -1; 
+
+                        //coroutine_yield();
+                        continue;
+                }   
+                offset += ret;
+                len -= ret;
+        }   
+
+        return 0;
+}
+
 static inline int is_handshake_size(int len)
 {
 	return len == HANDSHAKE_REQ_SIZE;
 }
 
+static void queue_response(struct client_info *ci, struct response *res)
+{
+	list_add_tail(&res->siblings, &ci->tx_reqs);
+}
+
 static void establish_connection(struct client_info *ci)
 {
-	int ret, fd = ci->fd;
+	int len, ret, fd = ci->fd;
 	char *buf = NULL;
-	/* read header */
+	struct iarchive *ia = NULL;
+	struct oarchive *oa = NULL;
+	struct ConnectResponse res;
 	struct ConnectRequest cr;
-	int len;
-	ret = recv_buffer(ci, &len, sizeof(int));
+
+	/* read header */
+	ret = recv_buffer(fd, &len, sizeof(int));
 	len = ntohl(len);
 	if (ret < 0 || !is_handshake_size(len)) {
 		printf("illegal msg size %d\n", len);
@@ -193,13 +234,13 @@ static void establish_connection(struct client_info *ci)
 	}
 
 	/* try to read connect header */
-	ret = recv_buffer(ci, buf, len);
+	ret = recv_buffer(fd, buf, len);
 	if (ret < 0) {
 		perror("unknown err\n");
 		abort();
 	}
 
-	struct iarchive *ia = create_buffer_iarchive(buf, len);
+	ia = create_buffer_iarchive(buf, len);
 	deserialize_ConnectRequest(ia, "hdr", &cr);
 	printf("protocolVersion %d, lastZxidSeen %lu, timeout %u, \
 			sessionId %lu, buffer.size %d\n", cr.protocolVersion, cr.lastZxidSeen,
@@ -207,19 +248,28 @@ static void establish_connection(struct client_info *ci)
 	close_buffer_iarchive(&ia);
 
 	/* try to handshake */
-	struct oarchive *oa = create_buffer_oarchive();
-	struct ConnectResponse res;
+	oa = create_buffer_oarchive();
 	res.protocolVersion = cr.protocolVersion;
 	res.timeOut = cr.timeOut;
 	res.sessionId = 1;
 	res.passwd.len = len;
 	serialize_ConnectResponse(oa, "rsp", &res);
 	len = get_buffer_len(oa);
-	write(fd, &len, sizeof(int));
-	write(fd, get_buffer(oa), len);
-	close_buffer_oarchive(&oa, 0);
+	ret = write_buffer(fd, &len, sizeof(int));
+	if (ret < 0) {
+		printf("unknown err");
+		goto cleanup;
+	}
+
+	ret = write_buffer(fd, get_buffer(oa), len);
+	if (ret < 0) {
+		printf("unknown err");
+		goto cleanup;
+	}
 
 	ci->status = CLIENT_STATUS_CONNECTED;
+cleanup:
+	close_buffer_oarchive(&oa, 0);
 }
 
 void delegate_request(struct client_info *ci)
@@ -275,10 +325,12 @@ static void client_handler(int fd, int events, void *data)
 		assert(ci->rx_list.next == NULL);
 
 
-		client_incref(ci);
+		//client_incref(ci);
 		client_rx_off(ci);
-		coroutine_enter(ci->rx_co, ci);
+		establish_connection(ci);
+		//coroutine_enter(&ci->rx_co, ci);
 		client_rx_on(ci);
+		//client_decref(ci);
 		//handle_request(ci);
 	}
 
@@ -287,7 +339,8 @@ static void client_handler(int fd, int events, void *data)
 		ci->tx_on = 1;
 		//client_tx_off(ci);
 
-		client_incref(ci);
+		//client_incref(ci);
+		//client_decref(ci);
 	}
 
 	if (ci->status == CLIENT_STATUS_DEAD) {
@@ -341,6 +394,9 @@ static struct client_info *create_client(int fd)
 	ci->fd = fd;
 	ci->refcnt = 1;
 	ci->status = CLIENT_STATUS_CONNECTING;
+
+	list_add_tail(&ci->siblings, &client_info_list);
+	INIT_LIST_HEAD(&ci->tx_reqs);
 
 	dprintf("ci %p", ci);
 
