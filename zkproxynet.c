@@ -32,7 +32,13 @@
 #include "zookeeper.jute.h"
 #include "recordio.h"
 
+
+#define ntohll(x) (((uint64_t)(ntohl((int)((x << 32) >> 32))) << 32) | (unsigned int)ntohl(((int)(x >> 32)))) 
+#define htonll(x) ntohll(x)
+
 extern int keepidle, keepintvl, keepcnt;
+static int min_timeout = 2000;
+static int max_timeout = 100000;
 
 struct client_id {
 	union {
@@ -210,14 +216,22 @@ static void queue_response(struct client_info *ci, struct response *res)
 	list_add_tail(&res->siblings, &ci->tx_reqs);
 }
 
+static void set_status_connected(struct client_info *ci)
+{
+	ci->status = CLIENT_STATUS_CONNECTED;
+}
+
+
 static void establish_connection(struct client_info *ci)
 {
 	int len, ret, fd = ci->fd;
 	char *buf = NULL;
-	struct iarchive *ia = NULL;
-	struct oarchive *oa = NULL;
+	struct response *r = NULL;
+	struct ConnectRequest req;
 	struct ConnectResponse res;
-	struct ConnectRequest cr;
+	//struct connect_res res;
+	struct iarchive *ia;
+	struct oarchive *oa;
 
 	/* read header */
 	ret = recv_buffer(fd, &len, sizeof(int));
@@ -241,35 +255,62 @@ static void establish_connection(struct client_info *ci)
 	}
 
 	ia = create_buffer_iarchive(buf, len);
-	deserialize_ConnectRequest(ia, "hdr", &cr);
+	deserialize_ConnectRequest(ia, "hdr", &req);
 	printf("protocolVersion %d, lastZxidSeen %lu, timeout %u, \
-			sessionId %lu, buffer.size %d\n", cr.protocolVersion, cr.lastZxidSeen,
-			cr.timeOut, cr.sessionId, cr.passwd.len);
+			sessionId %lu, buffer.size %d\n",
+			req.protocolVersion, req.lastZxidSeen,
+			req.timeOut,
+			req.sessionId,
+			req.passwd.len);
 	close_buffer_iarchive(&ia);
+	free(buf);
 
 	/* try to handshake */
-	oa = create_buffer_oarchive();
-	res.protocolVersion = cr.protocolVersion;
-	res.timeOut = cr.timeOut;
-	res.sessionId = 1;
-	res.passwd.len = len;
-	serialize_ConnectResponse(oa, "rsp", &res);
+	res.passwd.buff = zalloc(16);
+	r = zalloc(sizeof(struct response));
+	/* FIXME: err handling */
+
+        /* try to handshake */
+        oa = create_buffer_oarchive();
+        if (!oa)
+                return;
+        res.protocolVersion = req.protocolVersion;
+        res.sessionId = 1;
+	if (len > 16)
+        	res.passwd.len = 16;
+	else
+        	res.passwd.len = req.passwd.len;
+        memcpy(res.passwd.buff, req.passwd.buff, 16);
+        if (res.timeOut < min_timeout)
+                res.timeOut = min_timeout;
+        else if (res.timeOut > max_timeout)
+                res.timeOut = max_timeout;
+        else
+                res.timeOut = req.timeOut;
+
+        serialize_ConnectResponse(oa, "rsp", &res);
+
+#if 0
+        serialize_ConnectResponse(oa, "rsp", &res);
 	len = get_buffer_len(oa);
 	ret = write_buffer(fd, &len, sizeof(int));
 	if (ret < 0) {
 		printf("unknown err");
-		goto cleanup;
 	}
 
 	ret = write_buffer(fd, get_buffer(oa), len);
 	if (ret < 0) {
 		printf("unknown err");
-		goto cleanup;
 	}
-
 	ci->status = CLIENT_STATUS_CONNECTED;
-cleanup:
-	close_buffer_oarchive(&oa, 0);
+	client_tx_on(ci);
+#else
+	r->oa = oa;
+	r->callback = set_status_connected;
+	queue_response(ci, r);
+	client_tx_on(ci);
+#endif
+
 }
 
 void delegate_request(struct client_info *ci)
@@ -292,12 +333,11 @@ void delegate_request(struct client_info *ci)
 	printf("xid %d, type %d", rh.xid, rh.type);
 	close_buffer_iarchive(&ia);
 	*/
-	while(1);
 }
 
-#if 0
-static void handle_request(struct client_info *ci)
+static void client_rx_handler(void *opaque)
 {
+	struct client_info *ci = opaque;
 	printf("handle request, status %d\n", ci->status);
 	switch(ci->status) {
 	case CLIENT_STATUS_CONNECTING:
@@ -313,7 +353,12 @@ static void handle_request(struct client_info *ci)
 
 	}
 }
-#endif
+
+static void client_tx_handler(void *opaque)
+{
+	struct client_info *ci = opaque;
+	printf("handle request, status %d\n", ci->status);
+}
 
 static void client_handler(int fd, int events, void *data)
 {
@@ -338,6 +383,7 @@ static void client_handler(int fd, int events, void *data)
 		printf("write, %d\n", fd);
 		ci->tx_on = 1;
 		//client_tx_off(ci);
+		client_tx_handler(ci);
 
 		//client_incref(ci);
 		//client_decref(ci);
@@ -355,30 +401,6 @@ static void client_handler(int fd, int events, void *data)
 		client_decref(ci);
 	}
 }
-
-static void client_rx_handler(void *opaque)
-{
-	struct client_info *ci = opaque;
-	printf("handle request, status %d\n", ci->status);
-	switch(ci->status) {
-	case CLIENT_STATUS_CONNECTING:
-		printf("connecting. start to establish connection\n");
-		establish_connection(ci);
-		break;
-	case CLIENT_STATUS_CONNECTED:
-		printf("start to delegate connection\n");
-		delegate_request(ci);
-		break;
-	default:
-		printf("not yet implemented!");
-
-	}
-}
-
-static void client_tx_handler(void *opaque)
-{
-}
-
 
 static struct client_info *create_client(int fd)
 {
