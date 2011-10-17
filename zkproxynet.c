@@ -221,7 +221,6 @@ static void set_status_connected(struct client_info *ci)
 	ci->status = CLIENT_STATUS_CONNECTED;
 }
 
-
 static void establish_connection(struct client_info *ci)
 {
 	int len, ret, fd = ci->fd;
@@ -289,6 +288,7 @@ static void establish_connection(struct client_info *ci)
                 res.timeOut = req.timeOut;
 
         serialize_ConnectResponse(oa, "rsp", &res);
+	free(res.passwd.buff);
 
 #if 0
         serialize_ConnectResponse(oa, "rsp", &res);
@@ -333,6 +333,39 @@ void delegate_request(struct client_info *ci)
 	printf("xid %d, type %d", rh.xid, rh.type);
 	close_buffer_iarchive(&ia);
 	*/
+#if 0
+	int len, ret, fd = ci->fd;
+	char *buf = NULL;
+	struct response *r = NULL;
+	struct ConnectRequest req;
+	struct ConnectResponse res;
+	//struct connect_res res;
+	struct iarchive *ia;
+	struct oarchive *oa;
+
+printf("hoge");
+	/* read header */
+	ret = recv_buffer(fd, &len, sizeof(int));
+	len = ntohl(len);
+	if (ret < 0 || !is_handshake_size(len)) {
+		printf("illegal msg size %d\n", len);
+		return;
+	}
+
+	buf = zalloc(len);
+	if (buf == NULL) {
+		printf("oom\n");
+		return;
+	}
+
+	/* try to read connect header */
+	ret = recv_buffer(fd, buf, len);
+	if (ret < 0) {
+		perror("unknown err\n");
+		abort();
+	}
+#endif
+
 }
 
 static void client_rx_handler(void *opaque)
@@ -350,14 +383,36 @@ static void client_rx_handler(void *opaque)
 		break;
 	default:
 		printf("not yet implemented!");
-
 	}
 }
 
 static void client_tx_handler(void *opaque)
 {
 	struct client_info *ci = opaque;
+	struct response *res, *tmpres;
+	struct oarchive *oa;
+	int len = 0, ret = 0, fd = ci->fd;
 	printf("handle request, status %d\n", ci->status);
+
+	list_for_each_entry_safe(res, tmpres, &ci->tx_reqs, siblings) {
+		oa = res->oa;
+		len = get_buffer_len(oa);
+		ret = write_buffer(fd, &len, sizeof(int));
+		if (ret < 0) {
+			printf("unknown err");
+		}
+
+		ret = write_buffer(fd, get_buffer(oa), len);
+		if (ret < 0) {
+			printf("unknown err");
+		}
+
+		if (res->callback)
+			res->callback(ci);
+		close_buffer_oarchive(&oa, 0);
+		list_del(&res->siblings);
+		free(res);
+	}
 }
 
 static void client_handler(int fd, int events, void *data)
@@ -370,23 +425,20 @@ static void client_handler(int fd, int events, void *data)
 		assert(ci->rx_list.next == NULL);
 
 
-		//client_incref(ci);
+		client_incref(ci);
 		client_rx_off(ci);
 		establish_connection(ci);
 		//coroutine_enter(&ci->rx_co, ci);
 		client_rx_on(ci);
-		//client_decref(ci);
-		//handle_request(ci);
+		client_decref(ci);
 	}
 
 	if (events & EPOLLOUT) {
 		printf("write, %d\n", fd);
-		ci->tx_on = 1;
-		//client_tx_off(ci);
+		client_incref(ci);
+		client_tx_off(ci);
 		client_tx_handler(ci);
-
-		//client_incref(ci);
-		//client_decref(ci);
+		client_decref(ci);
 	}
 
 	if (ci->status == CLIENT_STATUS_DEAD) {
