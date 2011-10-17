@@ -30,6 +30,7 @@
 #include "coroutine.h"
 #include "zookeeper.h"
 #include "zookeeper.jute.h"
+#include "zk_adaptor.h"
 #include "recordio.h"
 
 
@@ -39,6 +40,7 @@
 extern int keepidle, keepintvl, keepcnt;
 static int min_timeout = 2000;
 static int max_timeout = 100000;
+static int max_msg_size = 1024*1024;
 
 struct client_id {
 	union {
@@ -316,26 +318,58 @@ static void establish_connection(struct client_info *ci)
 
 void delegate_request(struct client_info *ci)
 {
-	/*
-	int fd = ci->fd;
-	int len;
-	read(fd, &len, sizeof(int));
+	int fd = ci->fd, len, ret;
+	char *buf =NULL;
+	struct iarchive *ia;
+	struct oarchive *oa;
+	struct response *r;
+	struct RequestHeader rh;
+	struct ReplyHeader h;
+
+	ret = recv_buffer(fd, &len, sizeof(int));
 	len = ntohl(len);
 	printf("len %d\n", len);
-	*/
+	if (ret < 0 || len > max_msg_size) {
+		printf("illegal msg size %d\n", len);
+		return;
+	}
 
 	/* read payload */
-	/*
-	char buf[len];
-	read(fd, buf, len);
-	struct iarchive *ia = create_buffer_iarchive(buf, len);
-	struct RequestHeader rh;
+	buf = zalloc(len);
+	ret = recv_buffer(fd, buf, len);
+	ia = create_buffer_iarchive(buf, len);
 	deserialize_RequestHeader(ia, "hdr", &rh);
 	printf("xid %d, type %d", rh.xid, rh.type);
 	close_buffer_iarchive(&ia);
-	*/
-	printf("%s\n", __FUNCTION__);
-	while(1);
+
+	switch(rh.type) {
+	case PING_OP:
+		if (rh.xid != PING_XID)
+			return;
+
+		printf("ping.\n");
+		h.xid = PING_XID;
+		h.zxid = 1;
+		h.err = ZOK;
+		oa = create_buffer_oarchive();
+		serialize_ReplyHeader(oa, "rsp", &h);
+
+		len = get_buffer_len(oa);
+		write_buffer(fd, &len, sizeof(int));
+		write_buffer(fd, get_buffer(oa), len);
+		while(1);
+		/*
+		r = zalloc(sizeof(struct response));
+		r->oa = oa;
+		r->callback = NULL;
+		queue_response(ci, r);
+		*/
+		break;
+	default:
+		printf("not yet implemented.\n");
+
+	}
+	client_tx_on(ci);
 #if 0
 	int len, ret, fd = ci->fd;
 	char *buf = NULL;
