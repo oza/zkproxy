@@ -1,6 +1,6 @@
 CFLAGS += -g -O3 -Wall -Wstrict-prototypes -I./include
 CFLAGS += -D_GNU_SOURCE -DNDEBUG
-LIBS += -lpthread
+LIBS += -lpthread -lacrd
 
 PROGRAMS = zkproxy
 ZKPROXY_OBJS = zkproxy.o coroutine.o event.o net.o logger.o zkproxynet.o recordio.o zookeeper.jute.o

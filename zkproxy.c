@@ -32,7 +32,7 @@
 #include "zkproxy.h"
 
 #define MAX_EVENT_SIZE 4096
-#define ZKPROXY_DEFAULT_PORT 9090
+#define ZKPROXY_DEFAULT_PORT 9091
 #define LOG_DEFAULT_DIR "/tmp/zkproxy.log"
 
 static char program_name[] = "zkproxy";

@@ -32,10 +32,14 @@
 #include "zookeeper.jute.h"
 #include "zk_adaptor.h"
 #include "recordio.h"
+#include "accord.h"
 
 
 #define ntohll(x) (((uint64_t)(ntohl((int)((x << 32) >> 32))) << 32) | (unsigned int)ntohl(((int)(x >> 32)))) 
 #define htonll(x) ntohll(x)
+
+static int acrdport = 9090;
+static char *hostname = "localhost";
 
 extern int keepidle, keepintvl, keepcnt;
 static int min_timeout = 2000;
@@ -63,6 +67,8 @@ struct client_info {
 	struct client_id cid;
 	struct list_head siblings;
 	struct list_head tx_reqs;
+
+	struct acrd_handle *ah;
 
 	int fd;
 	enum client_status status;
@@ -99,6 +105,23 @@ static LIST_HEAD(client_info_list);
 /* the size of connect request */
 #define HANDSHAKE_REQ_SIZE 44
 
+static uint64_t local_nodeid;
+
+void leave_cb(struct acrd_handle *ah, const uint64_t *member_list,
+	size_t member_list_entries, uint64_t nodeid, void* arg)
+{
+
+}
+
+void join_cb(struct acrd_handle *ah, const uint64_t *member_list,
+	size_t member_list_entries, uint64_t nodeid, void* arg)
+{
+	if (local_nodeid == 0)
+		local_nodeid =  nodeid;
+
+	printf("local_nodeid %ld\n", local_nodeid);
+}
+
 static uint64_t get_zxid(struct client_info *ci)
 {
 	return ++ci->zxid;
@@ -107,6 +130,9 @@ static uint64_t get_zxid(struct client_info *ci)
 static void destroy_client(struct client_info *ci)
 {
 	printf("*** %s refcnt %d ***\n", __FUNCTION__, ci->refcnt);
+	if (ci->ah)
+		acrd_close(ci->ah);
+
 	close(ci->fd);
 	free(ci);
 }
@@ -275,6 +301,13 @@ static void establish_connection(struct client_info *ci)
 	close_buffer_iarchive(&ia);
 	free(buf);
 
+	/* start to send request */
+	ci->ah = acrd_init("localhost", 9090, join_cb, leave_cb, ci);
+	if (ci->ah == NULL) {
+		ci->status = CLIENT_STATUS_DEAD;
+		return;
+	}
+
 	/* try to handshake */
 	res.passwd.buff = zalloc(16);
 	r = zalloc(sizeof(struct response));
@@ -362,20 +395,63 @@ void delegate_request(struct client_info *ci)
 	printf("xid %d, type %d --> ", rh.xid, rh.type);
 	xid = rh.xid;
 	type = rh.type;
-	close_buffer_iarchive(&ia);
-	free(buf);
 
 	switch(type) {
 	case CREATE_OP:
-		printf("create. not yet implemented.\n");
-		break;
+	{
+		struct CreateRequest crereq;
+		struct CreateResponse creres;
 
+
+		deserialize_CreateRequest(ia, "req", &crereq);
+		printf("create. not yet implemented."
+		"path %s data %s\n",crereq.path, crereq.data.buff);
+		ret = acrd_write(ci->ah, crereq.path, crereq.data.buff,
+			crereq.data.len, 0, ACRD_FLAG_CREATE);
+
+		if (ret == ACRD_SUCCESS) {
+			h.err = ZOK;
+		} else if (ret == ACRD_ERR_EXIST){
+			h.err = ZNODEEXISTS;
+		} else {
+			/* FIXME : err handling correctly. */
+			h.err = ZAPIERROR;
+		}
+		h.xid = rh.xid;
+		h.zxid = get_zxid(ci);
+		creres.path = crereq.path;
+
+		oa = create_buffer_oarchive();
+		serialize_ReplyHeader(oa, "rsp", &h);
+		serialize_CreateResponse(oa, "rsp", &creres);
+
+		len = get_buffer_len(oa);
+		nlen = htonl(len);
+		ret = write_buffer(fd, &nlen, sizeof(nlen));
+		if (ret < 0) {
+			ci->status = CLIENT_STATUS_DEAD;
+			return;
+		}
+		ret = write_buffer(fd, get_buffer(oa), len);
+		if (ret < 0) {
+			ci->status = CLIENT_STATUS_DEAD;
+			return;
+		}
+
+		break;
+	}
 	case DELETE_OP:
+	{
+		struct DeleteRequest delreq;
 		printf("delete. not yet implemented.\n");
 		break;
+	}
 	case EXISTS_OP:
+	{
+		struct DeleteRequest delreq;
 		printf("exists. not yet implemented.\n");
 		break;
+	}
 	case GETDATA_OP:
 		printf("getdata. not yet implemented.\n");
 		break;
@@ -397,6 +473,7 @@ void delegate_request(struct client_info *ci)
 		oa = create_buffer_oarchive();
 		serialize_ReplyHeader(oa, "rsp", &h);
 
+#if 1
 		len = get_buffer_len(oa);
 		nlen = htonl(len);
 		ret = write_buffer(fd, &nlen, sizeof(int));
@@ -412,13 +489,11 @@ void delegate_request(struct client_info *ci)
 		}
 		printf("ping. len %d\n", len);
 		close_buffer_oarchive(&oa, 0);
-#if 0
-		/*
-		   r = zalloc(sizeof(struct response));
-		   r->oa = oa;
-		   r->callback = NULL;
-		   queue_response(ci, r);
-		 */
+#else
+		r = zalloc(sizeof(struct response));
+		r->oa = oa;
+		r->callback = NULL;
+		queue_response(ci, r);
 #endif
 		break;
 	case SETAUTH_OP:
@@ -436,7 +511,6 @@ void delegate_request(struct client_info *ci)
 		len = get_buffer_len(oa);
 		write_buffer(fd, &len, sizeof(int));
 		write_buffer(fd, get_buffer(oa), len);
-		while(1);
 		break;
 	case SETWATCHES_OP:
 		if (rh.xid != SET_WATCHES_XID) {
@@ -453,12 +527,14 @@ void delegate_request(struct client_info *ci)
 		len = get_buffer_len(oa);
 		write_buffer(fd, &len, sizeof(int));
 		write_buffer(fd, get_buffer(oa), len);
-		while(1);
 		break;
 	default:
 		printf("not yet implemented.\n");
 		abort();
 	}
+
+	close_buffer_iarchive(&ia);
+	free(buf);
 	client_tx_on(ci);
 #if 0
 	int len, ret, fd = ci->fd;
@@ -622,13 +698,11 @@ static void listen_handler(int listen_fd, int events, void *data)
 		return;
 	}
 
-	/*
 	ret = set_nonblocking(fd);
 	if (ret) {
 		close(fd);
 		return;
 	}
-	*/
 
 	ret = set_keepalive(fd, keepidle, keepintvl, keepcnt);
 	if (ret) {

@@ -1,7 +1,7 @@
 #ifndef __ACCORD_H__
 #define __ACCORD_H__
 
-#include "proto.h"
+#include "acrd_proto.h"
 #include "list.h"
 #include "net.h"
 
