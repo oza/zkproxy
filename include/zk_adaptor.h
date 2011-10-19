@@ -144,7 +144,7 @@ struct prime_struct {
     int64_t sessionId;
     int32_t passwd_len;
     char passwd[16];
-}; 
+};
 
 #ifdef THREADED
 /* this is used by mt_adaptor internally for thread management */
@@ -208,8 +208,8 @@ struct _zhandle {
      * call returned while there was at least one unprocessed server response 
      * available in the socket recv buffer */
     struct timeval socket_readable;
-    
-    zk_hashtable* active_node_watchers;   
+
+    zk_hashtable* active_node_watchers;
     zk_hashtable* active_exist_watchers;
     zk_hashtable* active_child_watchers;
     /** used for chroot path at the client side **/

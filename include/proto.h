@@ -53,6 +53,7 @@ static const int SETWATCHES_OP=101;
 #define GETCHILDREN2_OP 12
 #define CLOSE_OP -11
 #define SETAUTH_OP 100
+#define SETWATCHES_OP 101
 
 #endif
 

@@ -70,6 +70,7 @@ struct client_info {
 	int nr_outstanding_reqs;
 	uint64_t rx_len;
 	uint64_t tx_len;
+	uint64_t zxid;
 	struct co_buffer rx_buf;
 
 	struct coroutine *rx_co;
@@ -98,6 +99,11 @@ static LIST_HEAD(client_info_list);
 /* the size of connect request */
 #define HANDSHAKE_REQ_SIZE 44
 
+static uint64_t get_zxid(struct client_info *ci)
+{
+	return ++ci->zxid;
+}
+
 static void destroy_client(struct client_info *ci)
 {
 	printf("*** %s refcnt %d ***\n", __FUNCTION__, ci->refcnt);
@@ -109,7 +115,7 @@ static void client_incref(struct client_info *ci)
 {
 	if (ci) {
 		__sync_add_and_fetch(&ci->refcnt, 1);
-		printf("%s refcnt %d\n", __FUNCTION__, ci->refcnt);
+		//printf("%s refcnt %d\n", __FUNCTION__, ci->refcnt);
 	}
 }
 
@@ -118,7 +124,7 @@ static void client_decref(struct client_info *ci)
 	if (ci && __sync_sub_and_fetch(&ci->refcnt, 1) == 0)
 		destroy_client(ci);
 
-	printf("%s refcnt %d\n", __FUNCTION__, ci->refcnt);
+	//printf("%s refcnt %d\n", __FUNCTION__, ci->refcnt);
 }
 
 static void client_rx_on(struct client_info *ci)
@@ -196,14 +202,14 @@ static int write_buffer(int fd, void *buf, size_t len)
 
                 if (ret < 0) {
                         if (errno != EAGAIN)
-                                return -1; 
+                                return -1;
 
                         //coroutine_yield();
                         continue;
-                }   
+                }
                 offset += ret;
                 len -= ret;
-        }   
+        }
 
         return 0;
 }
@@ -240,6 +246,7 @@ static void establish_connection(struct client_info *ci)
 	len = ntohl(len);
 	if (ret < 0 || !is_handshake_size(len)) {
 		printf("illegal msg size %d\n", len);
+		ci->status = CLIENT_STATUS_DEAD;
 		return;
 	}
 
@@ -253,13 +260,14 @@ static void establish_connection(struct client_info *ci)
 	ret = recv_buffer(fd, buf, len);
 	if (ret < 0) {
 		perror("unknown err\n");
-		abort();
+		ci->status = CLIENT_STATUS_DEAD;
+		return;
 	}
 
 	ia = create_buffer_iarchive(buf, len);
 	deserialize_ConnectRequest(ia, "hdr", &req);
-	printf("protocolVersion %d, lastZxidSeen %lu, timeout %u, \
-			sessionId %lu, buffer.size %d\n",
+	printf("protocolVersion %d, lastZxidSeen %lu, timeout %u,"
+			"sessionId %lu, buffer.size %d\n",
 			req.protocolVersion, req.lastZxidSeen,
 			req.timeOut,
 			req.sessionId,
@@ -283,9 +291,9 @@ static void establish_connection(struct client_info *ci)
 	else
         	res.passwd.len = req.passwd.len;
         memcpy(res.passwd.buff, req.passwd.buff, 16);
-        if (res.timeOut < min_timeout)
+        if (req.timeOut < min_timeout)
                 res.timeOut = min_timeout;
-        else if (res.timeOut > max_timeout)
+        else if (req.timeOut > max_timeout)
                 res.timeOut = max_timeout;
         else
                 res.timeOut = req.timeOut;
@@ -316,40 +324,111 @@ static void establish_connection(struct client_info *ci)
 
 }
 
+int is_valid_size(int len)
+{
+ 	return (len > max_msg_size || len < 0);
+}
+
 void delegate_request(struct client_info *ci)
 {
-	int fd = ci->fd, len, ret;
+	int fd = ci->fd, len, nlen, ret, xid, type;
 	char *buf =NULL;
 	struct iarchive *ia;
 	struct oarchive *oa;
-	struct response *r;
+	//struct response *r;
 	struct RequestHeader rh;
 	struct ReplyHeader h;
 
 	ret = recv_buffer(fd, &len, sizeof(int));
 	len = ntohl(len);
 	printf("len %d\n", len);
-	if (ret < 0 || len > max_msg_size) {
-		printf("illegal msg size %d\n", len);
+	if (ret < 0 || is_valid_size(len) ) {
+		printf("illegal msg size %d(%u)\n", len, len);
+		ci->status = CLIENT_STATUS_DEAD;
 		return;
 	}
 
 	/* read payload */
 	buf = zalloc(len);
 	ret = recv_buffer(fd, buf, len);
+	if (ret < 0) {
+		printf("illegal msg %d, ret %d\n", len, ret);
+		ci->status = CLIENT_STATUS_DEAD;
+		return;
+	}
+
 	ia = create_buffer_iarchive(buf, len);
 	deserialize_RequestHeader(ia, "hdr", &rh);
-	printf("xid %d, type %d", rh.xid, rh.type);
+	printf("xid %d, type %d --> ", rh.xid, rh.type);
+	xid = rh.xid;
+	type = rh.type;
 	close_buffer_iarchive(&ia);
+	free(buf);
 
-	switch(rh.type) {
+	switch(type) {
+	case CREATE_OP:
+		printf("create. not yet implemented.\n");
+		break;
+
+	case DELETE_OP:
+		printf("delete. not yet implemented.\n");
+		break;
+	case EXISTS_OP:
+		printf("exists. not yet implemented.\n");
+		break;
+	case GETDATA_OP:
+		printf("getdata. not yet implemented.\n");
+		break;
+	case SETDATA_OP:
+		printf("setdata. not yet implemented.\n");
+		break;
+	case SYNC_OP:
+		printf("sync. not yet implemented.\n");
+		break;
 	case PING_OP:
-		if (rh.xid != PING_XID)
+		if (rh.xid != PING_XID) {
+			ci->status = CLIENT_STATUS_DEAD;
 			return;
+		}
 
-		printf("ping.\n");
-		h.xid = PING_XID;
-		h.zxid = 1;
+		h.xid = -2;
+		h.zxid = get_zxid(ci); //rh.xzid;
+		h.err = 0;
+		oa = create_buffer_oarchive();
+		serialize_ReplyHeader(oa, "rsp", &h);
+
+		len = get_buffer_len(oa);
+		nlen = htonl(len);
+		ret = write_buffer(fd, &nlen, sizeof(int));
+		if (ret < 0) {
+			ci->status = CLIENT_STATUS_DEAD;
+			return;
+		}
+
+		ret = write_buffer(fd, get_buffer(oa), len);
+		if (ret < 0) {
+			ci->status = CLIENT_STATUS_DEAD;
+			return;
+		}
+		printf("ping. len %d\n", len);
+		close_buffer_oarchive(&oa, 0);
+#if 0
+		/*
+		   r = zalloc(sizeof(struct response));
+		   r->oa = oa;
+		   r->callback = NULL;
+		   queue_response(ci, r);
+		 */
+#endif
+		break;
+	case SETAUTH_OP:
+		if (rh.xid != AUTH_XID) {
+			ci->status = CLIENT_STATUS_DEAD;
+			return;
+		}
+		printf("setauth xid %d, type %d\n", rh.xid, rh.type);
+		h.xid = AUTH_XID;
+		h.zxid = 3;
 		h.err = ZOK;
 		oa = create_buffer_oarchive();
 		serialize_ReplyHeader(oa, "rsp", &h);
@@ -358,16 +437,27 @@ void delegate_request(struct client_info *ci)
 		write_buffer(fd, &len, sizeof(int));
 		write_buffer(fd, get_buffer(oa), len);
 		while(1);
-		/*
-		r = zalloc(sizeof(struct response));
-		r->oa = oa;
-		r->callback = NULL;
-		queue_response(ci, r);
-		*/
+		break;
+	case SETWATCHES_OP:
+		if (rh.xid != SET_WATCHES_XID) {
+			ci->status = CLIENT_STATUS_DEAD;
+			return;
+		}
+		printf("set watch xid %d, type %d\n", rh.xid, rh.type);
+		h.xid = SET_WATCHES_XID;
+		h.zxid = 3;
+		h.err = ZOK;
+		oa = create_buffer_oarchive();
+		serialize_ReplyHeader(oa, "rsp", &h);
+
+		len = get_buffer_len(oa);
+		write_buffer(fd, &len, sizeof(int));
+		write_buffer(fd, get_buffer(oa), len);
+		while(1);
 		break;
 	default:
 		printf("not yet implemented.\n");
-
+		abort();
 	}
 	client_tx_on(ci);
 #if 0
@@ -408,7 +498,6 @@ printf("hoge");
 static void client_rx_handler(void *opaque)
 {
 	struct client_info *ci = opaque;
-	printf("handle request, status %d\n", ci->status);
 	switch(ci->status) {
 	case CLIENT_STATUS_CONNECTING:
 		printf("connecting. start to establish connection\n");
@@ -436,12 +525,12 @@ static void client_tx_handler(void *opaque)
 		len = get_buffer_len(oa);
 		ret = write_buffer(fd, &len, sizeof(int));
 		if (ret < 0) {
-			printf("unknown err");
+			printf("unknown err\n");
 		}
 
 		ret = write_buffer(fd, get_buffer(oa), len);
 		if (ret < 0) {
-			printf("unknown err");
+			printf("unknown err\n");
 		}
 
 		if (res->callback)
@@ -457,10 +546,8 @@ static void client_handler(int fd, int events, void *data)
 	struct client_info *ci = (struct client_info *)data;
 
 	if (events & EPOLLIN) {
-		printf("read, %d\n", fd);
-		printf("read, %d\n", ci->fd);
+		//printf("read, %d\n", ci->fd);
 		assert(ci->rx_list.next == NULL);
-
 
 		client_incref(ci);
 		client_rx_off(ci);
@@ -471,7 +558,7 @@ static void client_handler(int fd, int events, void *data)
 	}
 
 	if (events & EPOLLOUT) {
-		printf("write, %d\n", fd);
+		//printf("write, %d\n", fd);
 		client_incref(ci);
 		client_tx_off(ci);
 		client_tx_handler(ci);
@@ -505,6 +592,7 @@ static struct client_info *create_client(int fd)
 	ci->fd = fd;
 	ci->refcnt = 1;
 	ci->status = CLIENT_STATUS_CONNECTING;
+	ci->zxid = 0;
 
 	list_add_tail(&ci->siblings, &client_info_list);
 	INIT_LIST_HEAD(&ci->tx_reqs);
@@ -534,11 +622,13 @@ static void listen_handler(int listen_fd, int events, void *data)
 		return;
 	}
 
+	/*
 	ret = set_nonblocking(fd);
 	if (ret) {
 		close(fd);
 		return;
 	}
+	*/
 
 	ret = set_keepalive(fd, keepidle, keepintvl, keepcnt);
 	if (ret) {
