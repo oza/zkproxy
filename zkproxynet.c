@@ -402,10 +402,8 @@ void delegate_request(struct client_info *ci)
 		struct CreateRequest crereq;
 		struct CreateResponse creres;
 
-
 		deserialize_CreateRequest(ia, "req", &crereq);
-		printf("create. not yet implemented."
-		"path %s data %s\n",crereq.path, crereq.data.buff);
+		printf("create. path %s data %s\n", crereq.path, crereq.data.buff);
 		ret = acrd_write(ci->ah, crereq.path, crereq.data.buff,
 			crereq.data.len, 0, ACRD_FLAG_CREATE);
 
@@ -442,21 +440,108 @@ void delegate_request(struct client_info *ci)
 	}
 	case DELETE_OP:
 	{
-		struct DeleteRequest delreq;
 		printf("delete. not yet implemented.\n");
 		break;
 	}
 	case EXISTS_OP:
 	{
-		struct DeleteRequest delreq;
 		printf("exists. not yet implemented.\n");
 		break;
 	}
 	case GETDATA_OP:
-		printf("getdata. not yet implemented.\n");
+	{
+		struct GetDataRequest getreq;
+		struct GetDataResponse getres;
+		uint32_t cnt = max_msg_size;
+
+		deserialize_GetDataRequest(ia, "req", &getreq);
+		printf("contents of getreq: path %s, watch %d\n",
+			getreq.path, getreq.watch);
+
+		/* FIXME: This approach is too naive, but safe. */
+		buf = zalloc(max_msg_size);
+		ret = acrd_read(ci->ah, getreq.path, buf,
+			&cnt, 0, 0);
+
+		if (ret == ACRD_SUCCESS) {
+			h.err = ZOK;
+			printf("SUCCESS\n");
+		} else if (ret == ACRD_ERR_NOTFOUND){
+			h.err = ZNONODE;
+		} else {
+			/* FIXME : err handling correctly. */
+			h.err = ZAPIERROR;
+		}
+		h.xid = rh.xid;
+		h.zxid = get_zxid(ci);
+
+		getres.data.buff = buf;
+		getres.data.len = cnt;
+
+		printf("buf %s len %d ret %d\n", buf, cnt, ret);
+
+		oa = create_buffer_oarchive();
+		serialize_ReplyHeader(oa, "rsp", &h);
+		serialize_GetDataResponse(oa, "rsp", &getres);
+
+		len = get_buffer_len(oa);
+		nlen = htonl(len);
+		ret = write_buffer(fd, &nlen, sizeof(nlen));
+		if (ret < 0) {
+			ci->status = CLIENT_STATUS_DEAD;
+			return;
+		}
+		ret = write_buffer(fd, get_buffer(oa), len);
+		if (ret < 0) {
+			ci->status = CLIENT_STATUS_DEAD;
+			return;
+		}
+
 		break;
+	}
 	case SETDATA_OP:
-		printf("setdata. not yet implemented.\n");
+	{
+		struct SetDataRequest setreq;
+		struct SetDataResponse setres;
+
+		printf("set. Note that watch request is igonored current version.\n");
+
+		deserialize_SetDataRequest(ia, "req", &setreq);
+		printf("contents of setreq: path %s, setreq %s version %d\n", 
+			setreq.path, setreq.data.buff, setreq.version);
+
+		ret = acrd_write(ci->ah, setreq.path, setreq.data.buff,
+			setreq.data.len, 0, 0);
+		if (ret == ACRD_SUCCESS) {
+			h.err = ZOK;
+		} else if (ret == ACRD_ERR_NOTFOUND){
+			h.err = ZNONODE;
+		} else {
+			/* FIXME : err handling correctly. */
+			h.err = ZAPIERROR;
+		}
+
+		h.xid = rh.xid;
+		h.zxid = get_zxid(ci);
+		memset(&setres, 0, sizeof(struct Stat));
+
+		oa = create_buffer_oarchive();
+		serialize_ReplyHeader(oa, "rsp", &h);
+		serialize_SetDataResponse(oa, "rsp", &setres);
+
+		len = get_buffer_len(oa);
+		nlen = htonl(len);
+		ret = write_buffer(fd, &nlen, sizeof(nlen));
+		if (ret < 0) {
+			ci->status = CLIENT_STATUS_DEAD;
+			return;
+		}
+		ret = write_buffer(fd, get_buffer(oa), len);
+		if (ret < 0) {
+			ci->status = CLIENT_STATUS_DEAD;
+			return;
+		}
+	}
 		break;
 	case SYNC_OP:
 		printf("sync. not yet implemented.\n");
